@@ -1,0 +1,10 @@
+# Build context is the repo root; send only what images/Containerfile uses.
+*
+!apps.json
+!apps/
+!images/nginx/
+!images/check-assets.py
+!deploy/frappe_docker/resources/core/main-entrypoint.sh
+!deploy/frappe_docker/resources/core/start.sh
+apps/**/__pycache__
+apps/**/node_modules

@@ -1,0 +1,88 @@
+# syntax=docker/dockerfile:1
+# ERP release image: Frappe + apps.json apps + our custom app (apps/<CUSTOM_APP>).
+# Build with scripts/build-image.sh or CI (context = repo root, see .dockerignore).
+#
+# Derived from frappe_docker images/layered/Containerfile. Differences:
+# - Frappe pinned by git tag (FRAPPE_REF); base/build images pinned by digest.
+# - apps.json holds only public repos, so it is copied in, not passed as a secret.
+# - The custom app comes from this repo, so the build needs no git credentials.
+# - versions.json records the exact commit of every app in the image.
+# - nginx template re-resolves backend/websocket IPs (see images/nginx/).
+#
+# Assets: bench builds them into sites/assets, then they are moved to ./assets.
+# The entrypoint links them back into the sites volume at every start, so a new
+# image always serves its own assets. Never run `bench build` in a running container.
+
+ARG BUILD_IMAGE
+ARG BASE_IMAGE
+
+FROM ${BUILD_IMAGE} AS builder
+
+ARG FRAPPE_PATH=https://github.com/frappe/frappe
+ARG FRAPPE_REF
+ARG CUSTOM_APP
+ARG REPO_REV=unknown
+
+USER frappe
+
+COPY --chown=frappe:frappe apps.json /opt/frappe/apps.json
+
+RUN bench init \
+    --apps_path=/opt/frappe/apps.json \
+    --frappe-branch=${FRAPPE_REF} \
+    --frappe-path=${FRAPPE_PATH} \
+    --no-procfile \
+    --no-backups \
+    --skip-redis-config-generation \
+    --verbose \
+    /home/frappe/frappe-bench
+
+WORKDIR /home/frappe/frappe-bench
+
+COPY --chown=frappe:frappe apps/${CUSTOM_APP} /opt/frappe/${CUSTOM_APP}
+COPY images/check-assets.py /opt/frappe/check-assets.py
+
+# bench get-app only takes git repos, so wrap the copied app in a throwaway one.
+RUN git -C /opt/frappe/${CUSTOM_APP} init -q -b main \
+  && git -C /opt/frappe/${CUSTOM_APP} add -A \
+  && git -C /opt/frappe/${CUSTOM_APP} -c user.name=build -c user.email=build@localhost commit -q -m "${REPO_REV}" \
+  && bench get-app /opt/frappe/${CUSTOM_APP} \
+  && echo "{}" > sites/common_site_config.json \
+  && for app in $(cat sites/apps.txt); do \
+       if [ "$app" = "${CUSTOM_APP}" ]; then printf '%s %s %s\n' "$app" "${REPO_REV}" "repo"; \
+       else printf '%s %s %s\n' "$app" "$(git -C apps/$app rev-parse HEAD)" "$(git -C apps/$app describe --tags --always)"; fi; \
+     done | python3 -c 'import json,sys; print(json.dumps({a: {"commit": c, "describe": d} for a, c, d in (l.split() for l in sys.stdin)}, indent=2))' \
+       > versions.json \
+  && cat versions.json \
+  && python3 /opt/frappe/check-assets.py sites ${CUSTOM_APP} \
+  && find apps -mindepth 1 -path "*/.git" | xargs rm -fr \
+  && chmod -R g=u /home/frappe/frappe-bench
+
+FROM ${BASE_IMAGE} AS backend
+
+USER frappe
+
+# g=u is applied in the builder: a chmod here would duplicate the whole bench in a new layer.
+COPY --from=builder --chown=frappe:0 /home/frappe/frappe-bench /home/frappe/frappe-bench
+
+WORKDIR /home/frappe/frappe-bench
+
+# Move assets to image-layer storage; the entrypoint links them into the sites volume.
+RUN cp -r /home/frappe/frappe-bench/sites/assets /home/frappe/frappe-bench/assets && \
+  rm -rf /home/frappe/frappe-bench/sites/assets
+
+VOLUME [ \
+  "/home/frappe/frappe-bench/sites", \
+  "/home/frappe/frappe-bench/logs" \
+]
+
+USER root
+COPY deploy/frappe_docker/resources/core/main-entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY deploy/frappe_docker/resources/core/start.sh /usr/local/bin/start.sh
+COPY images/nginx/frappe.conf.template /templates/nginx/frappe.conf.template
+RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/start.sh
+
+USER frappe
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+CMD ["start.sh"]

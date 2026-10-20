@@ -1,0 +1,21 @@
+# Our overrides for every environment, on top of frappe_docker compose.yaml + mariadb +
+# redis + proxy overrides. Keep upstream files unmodified; put changes here.
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  configurator: *logging
+  backend: *logging
+  frontend: *logging
+  websocket: *logging
+  queue-short: *logging
+  queue-long: *logging
+  scheduler: *logging
+  db: *logging
+  redis-cache: *logging
+  redis-queue: *logging

@@ -1,0 +1,190 @@
+# Build the release image for arm64 (Pi) and amd64 (future server) on native runners,
+# publish one multi-arch tag to GHCR, then verify it on a throwaway stack (fresh install,
+# then a full deploy over it). The run summary prints the ref to deploy.
+#
+# No secrets needed: GITHUB_TOKEN pushes to ghcr.io/<owner>/erp.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/**
+      - images/**
+      - apps.json
+      - versions.env
+      - deploy/**
+      - .github/workflows/build.yml
+  workflow_dispatch:
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Read versions
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/erp" >> "$GITHUB_ENV"
+          echo "REPO_REV=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          grep -E '^(FRAPPE_REF|BUILD_IMAGE|BASE_IMAGE|CUSTOM_APP)=' versions.env >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/Containerfile
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            BUILD_IMAGE=${{ env.BUILD_IMAGE }}
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
+            FRAPPE_REF=${{ env.FRAPPE_REF }}
+            CUSTOM_APP=${{ env.CUSTOM_APP }}
+            REPO_REV=${{ env.REPO_REV }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.REPO_REV }}
+            erp.frappe.ref=${{ env.FRAPPE_REF }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Layer cache: a change only under apps/ skips the slow `bench init` layer.
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+      - name: Save digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_ref: ${{ steps.ref.outputs.image_ref }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch tag
+        id: ref
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/erp"
+          TAG="${GITHUB_SHA::7}"
+          docker buildx imagetools create -t "$IMAGE:$TAG" -t "$IMAGE:main" \
+            $(printf "$IMAGE@sha256:%s " *)
+          digest="$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "image_ref=$IMAGE:$TAG@$digest" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: merge
+    # Same arch as the Pi.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_REF: ${{ needs.merge.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fresh install, then deploy over it
+        run: |
+          mkdir -p "$RUNNER_TEMP/backups"
+          cat > deploy/env/ci.env <<EOF
+          COMPOSE_PROJECT=erp-ci
+          SITE_NAME=ci.localhost
+          FRAPPE_SITE_NAME_HEADER=ci.localhost
+          PULL_POLICY=missing
+          DB_PASSWORD=$(openssl rand -hex 16)
+          COMPOSE_OVERRIDES=compose.pi.yaml
+          PROXY=noproxy
+          HTTP_PUBLISH_PORT=8080
+          BACKUP_DIR=$RUNNER_TEMP/backups
+          EOF
+          ADMIN_PASSWORD="$(openssl rand -hex 16)" deploy/deploy.sh init ci "$IMAGE_REF"
+          deploy/deploy.sh deploy ci "$IMAGE_REF"
+
+      - name: Frontend and custom assets
+        run: |
+          deploy/dc ci exec -T frontend nginx -t
+          curl -fsS -o /dev/null http://localhost:8080/api/method/ping
+          deploy/dc ci exec -T backend bash -ec '
+            f=$(python3 -c "import json; print(json.load(open(\"sites/assets/assets.json\"))[\"$1.bundle.css\"])")
+            curl -fsS -o /dev/null http://frontend:8080$f && echo "served $f"
+            for font in $(ls apps/$1/$1/public/fonts/*.woff2); do
+              curl -fsS -o /dev/null "http://frontend:8080/assets/$1/fonts/$(basename $font)" && echo "served $(basename $font)"
+            done
+          ' _ "$(sed -n 's/^CUSTOM_APP=//p' versions.env)"
+
+      - name: Logs on failure
+        if: failure()
+        run: deploy/dc ci logs --tail 200
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image"
+            echo '```'
+            echo "$IMAGE_REF"
+            echo '```'
+            echo "Deploy on the Pi:"
+            echo '```'
+            echo "deploy/deploy.sh deploy pi $IMAGE_REF"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

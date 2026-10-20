@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# docker compose for one deployed environment: frappe_docker files + our overrides.
+#   deploy/dc <env> <compose args>      e.g. deploy/dc pi ps,  deploy/dc pi logs -f backend
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_NAME="${1:?usage: deploy/dc <env> <compose args>}"; shift
+ENV_FILE="$HERE/env/$ENV_NAME.env"
+STATE_FILE="$HERE/state/$ENV_NAME.env"
+FD="$HERE/frappe_docker"
+
+[ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE (copy deploy/env/example.env)" >&2; exit 1; }
+set -a; source "$ENV_FILE"; set +a
+
+# The image is IMAGE_REF_OVERRIDE (a release deploy.sh is trying) or else the last good release
+# in the state file. Exported, so it beats any CUSTOM_IMAGE/CUSTOM_TAG in the env file:
+# compose gives shell variables priority over --env-file.
+ref="${IMAGE_REF_OVERRIDE:-$( [ -f "$STATE_FILE" ] && sed -n 's/^IMAGE_REF=//p' "$STATE_FILE" || true)}"
+if [ -n "$ref" ]; then
+  # compose.yaml uses CUSTOM_IMAGE:CUSTOM_TAG; the tag may carry @sha256:digest.
+  name="${ref%%@*}"
+  [[ "${name##*/}" == *:* ]] || { echo "image ref needs a tag: $ref" >&2; exit 1; }
+  export CUSTOM_IMAGE="${name%:*}" CUSTOM_TAG="${name##*:}${ref#"$name"}"
+else
+  export CUSTOM_IMAGE=erp-not-deployed CUSTOM_TAG=none
+fi
+
+case "${PROXY:-noproxy}" in
+  noproxy) proxy="$FD/overrides/compose.noproxy.yaml" ;;
+  https)   proxy="$FD/overrides/compose.https.yaml" ;;
+  *) echo "unknown PROXY=$PROXY" >&2; exit 1 ;;
+esac
+
+# Per-host extras (e.g. compose.pi.yaml memory tuning), space-separated, relative to deploy/.
+extra=()
+for f in ${COMPOSE_OVERRIDES:-}; do
+  [ -f "$HERE/$f" ] || { echo "COMPOSE_OVERRIDES: $HERE/$f not found" >&2; exit 1; }
+  extra+=(-f "$HERE/$f")
+done
+
+exec docker compose -p "$COMPOSE_PROJECT" \
+  --env-file "$ENV_FILE" \
+  -f "$FD/compose.yaml" \
+  -f "$FD/overrides/compose.mariadb.yaml" \
+  -f "$FD/overrides/compose.redis.yaml" \
+  -f "$proxy" \
+  -f "$HERE/compose.base.yaml" \
+  "${extra[@]}" \
+  "$@"

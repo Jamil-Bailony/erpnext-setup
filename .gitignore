@@ -1,0 +1,9 @@
+# Deployed environment secrets and state (live on the host only)
+deploy/env/*.env
+!deploy/env/example.env
+deploy/state/
+
+__pycache__/
+*.pyc
+node_modules/
+.claude/settings.local.json
