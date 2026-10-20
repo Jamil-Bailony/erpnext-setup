@@ -156,8 +156,9 @@ jobs:
           HTTP_PUBLISH_PORT=8080
           BACKUP_DIR=$RUNNER_TEMP/backups
           EOF
-          ADMIN_PASSWORD="$(openssl rand -hex 16)" deploy/deploy.sh init ci "$IMAGE_REF"
-          deploy/deploy.sh deploy ci "$IMAGE_REF"
+          df -h / | tee "$RUNNER_TEMP/verify.log"
+          ADMIN_PASSWORD="$(openssl rand -hex 16)" deploy/deploy.sh init ci "$IMAGE_REF" 2>&1 | tee -a "$RUNNER_TEMP/verify.log"
+          deploy/deploy.sh deploy ci "$IMAGE_REF" 2>&1 | tee -a "$RUNNER_TEMP/verify.log"
 
       - name: Frontend and custom assets
         run: |
@@ -173,7 +174,14 @@ jobs:
 
       - name: Logs on failure
         if: failure()
-        run: deploy/dc ci logs --tail 200
+        run: |
+          deploy/dc ci ps -a || true
+          deploy/dc ci logs --tail 200 || true
+          # Also as annotations: those are readable without logging in to GitHub.
+          annotate() { python3 -c 'import sys; t=sys.stdin.read()[-3500:]; print("::error title=" + sys.argv[1] + "::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' "$1"; }
+          tr '\r' '\n' < "$RUNNER_TEMP/verify.log" | grep -v '^\s*$' | grep -v 'Updating DocTypes' | tail -40 | annotate "verify output" || true
+          { df -h /; docker system df; deploy/dc ci ps -a; } 2>&1 | annotate "disk and containers" || true
+          deploy/dc ci logs --tail 15 db backend 2>&1 | annotate "db and backend logs" || true
 
       - name: Summary
         run: |
