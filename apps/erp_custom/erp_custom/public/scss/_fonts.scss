@@ -1,0 +1,58 @@
+// Fonts
+//
+// Arabic text: Noto Sans Arabic for body text, Noto Kufi Arabic for headings.
+// Latin text and digits keep Frappe's Inter.
+//
+// How: Frappe takes every font-family from the --font-stack variable. We put the Noto face
+// right after Inter. Inter has no Arabic glyphs, so the browser uses Noto for Arabic
+// characters only, per character. The unicode-range below also means the Noto files are
+// downloaded only on pages that actually show Arabic text.
+//
+// The files are the Arabic subsets of the variable fonts (all weights in one file), from
+// @fontsource-variable 5.3.0, SIL OFL 1.1. They are served by our own nginx, so no internet
+// access is needed.
+
+$arabic-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF,
+	U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC;
+
+@font-face {
+	font-family: "Noto Sans Arabic";
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url("/assets/erp_custom/fonts/noto-sans-arabic-arabic-wght-normal.woff2") format("woff2");
+	unicode-range: $arabic-range;
+}
+
+@font-face {
+	font-family: "Noto Kufi Arabic";
+	font-style: normal;
+	font-weight: 100 900;
+	font-display: swap;
+	src: url("/assets/erp_custom/fonts/noto-kufi-arabic-arabic-wght-normal.woff2") format("woff2");
+	unicode-range: $arabic-range;
+}
+
+$system-fallback: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+	sans-serif;
+
+// html:root outranks Frappe's own :root rule regardless of stylesheet order.
+html:root {
+	--font-stack: "InterVariable", "Inter", "Noto Sans Arabic", #{$system-fallback};
+	--erp-heading-font-stack: "InterVariable", "Inter", "Noto Kufi Arabic", #{$system-fallback};
+}
+
+// Headings: page titles, form section heads, workspace cards, dialogs.
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.page-title .title-text,
+.section-head,
+.widget-title,
+.modal-title,
+.head-title {
+	font-family: var(--erp-heading-font-stack);
+}

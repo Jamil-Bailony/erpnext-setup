@@ -1,0 +1,6 @@
+// erp_custom styles for the desk (/app) and website pages. Loaded after Frappe and ERPNext.
+//
+// Built into a content-hashed file by `bench build`; the image build fails if it is missing
+// from the asset manifest (images/check-assets.py).
+
+@import "./fonts";

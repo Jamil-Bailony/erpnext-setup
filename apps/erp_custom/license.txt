@@ -1,0 +1,4 @@
+Copyright (c) 2026 Jamil Bailony. All rights reserved.
+
+The font files in erp_custom/public/fonts are licensed separately under the
+SIL Open Font License 1.1; see the OFL-*.txt files next to them.
