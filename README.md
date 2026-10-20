@@ -1,7 +1,8 @@
 # ERP
 
-ERPNext v16 + `erp_custom` (our app for all customisations: UI, fonts, and later
-fields, reports, scripts). Runs on a Raspberry Pi 4 for 3–5 users over Netbird; the same
+ERPNext v16 + [arabic_translations](https://github.com/ibrahim317/erpnext-arabic-full-translation)
+(full Arabic UI, overlay mode) + `erp_custom` (our app for all customisations: UI, fonts,
+and later fields, reports, scripts). Runs on a Raspberry Pi 4 for 3–5 users over Netbird; the same
 image and scripts move to a server later.
 
 The image is built by GitHub Actions (arm64 + amd64), never on the Pi.
@@ -36,7 +37,7 @@ Needs Docker with Compose. Everything goes through `./dev` (or VS Code "Reopen i
 
 | Path | What |
 |---|---|
-| `versions.env`, `apps.json` | Release pins: Frappe tag, base images, ERPNext tag |
+| `versions.env`, `apps.json` | Release pins: Frappe tag, base images, ERPNext tag, translations branch |
 | `apps/erp_custom/` | Our Frappe app |
 | `images/Containerfile` | Release image (Frappe + ERPNext + erp_custom) |
 | `images/nginx/` | nginx template with the stale-IP (502) fix |

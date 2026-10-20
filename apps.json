@@ -1,3 +1,4 @@
 [
-  {"url": "https://github.com/frappe/erpnext", "branch": "v16.51.1"}
+  {"url": "https://github.com/frappe/erpnext", "branch": "v16.51.1"},
+  {"url": "https://github.com/ibrahim317/erpnext-arabic-full-translation", "branch": "develop"}
 ]

@@ -40,7 +40,9 @@ declare -A cur new
 cur[frappe]="$FRAPPE_REF"
 new[frappe]="$(latest_tag https://github.com/frappe/frappe "$MAJOR")"
 while read -r app url ref; do
-  cur[$app]="$ref"; new[$app]="$(latest_tag "$url" "$MAJOR")"
+  cur[$app]="$ref"
+  # Apps pinned to a branch (no release tags upstream) follow that branch; nothing to bump.
+  if [[ "$ref" =~ ^v[0-9]+\. ]]; then new[$app]="$(latest_tag "$url" "$MAJOR")"; else new[$app]="$ref"; fi
 done < <(python3 -c '
 import json
 for a in json.load(open("'"$ROOT"'/apps.json")):

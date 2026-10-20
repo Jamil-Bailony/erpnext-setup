@@ -58,16 +58,21 @@ assert_image() {
   grep -Fxq "$1" <<<"$images" || die "compose would not run $1; it renders: $(tr '\n' ' ' <<<"$images")"
 }
 
-# Site checks run in a one-off container on USE_REF: database, apps, a simple query.
+# Apps of an image, in bench order (frappe, apps.json order, custom app). The sites volume's
+# apps.txt is rewritten alphabetically by the configurator, so read the image's own copy.
+image_apps() { docker run --rm --entrypoint cat "$1" /home/frappe/frappe-bench/sites/apps.txt; }
+
+# Site checks run in a one-off container on USE_REF: database, every image app installed, a query.
 site_checks() {
   log "site checks on ${USE_REF:-current release}"
   dc run --rm --no-deps -T backend bash -ec '
-    apps="$(bench --site "$1" list-apps)"
-    for a in frappe erpnext "$2"; do
-      grep -q "^$a\b" <<<"$apps" || { echo "app $a is not installed on $1" >&2; exit 1; }
+    site="$1"; shift
+    apps="$(bench --site "$site" list-apps)"
+    for a in "$@"; do
+      grep -q "^$a\b" <<<"$apps" || { echo "app $a is not installed on $site" >&2; exit 1; }
     done
-    bench --site "$1" execute frappe.client.get_count --kwargs "{\"doctype\": \"Company\"}" >/dev/null
-  ' _ "$SITE_NAME" "$CUSTOM_APP"
+    bench --site "$site" execute frappe.client.get_count --kwargs "{\"doctype\": \"Company\"}" >/dev/null
+  ' _ "$SITE_NAME" $(image_apps "$USE_REF")
 }
 
 # Every Frappe service runs on USE_REF and stays up, and workers have registered.
@@ -110,7 +115,7 @@ wait_http() {
 # Every app installed on the site must exist in the new image, or migrate fails half-way.
 missing_apps() {
   local image_apps site_apps a missing=""
-  image_apps="$(docker run --rm --entrypoint cat "$1" /home/frappe/frappe-bench/sites/apps.txt)"
+  image_apps="$(image_apps "$1")"
   site_apps="$(in_backend bench --site "$SITE_NAME" list-apps | awk '{print $1}')"
   for a in $site_apps; do grep -qx "$a" <<<"$image_apps" || missing="$missing $a"; done
   [ -z "$missing" ] || die "installed on $SITE_NAME but not in $1:$missing
@@ -184,12 +189,14 @@ case "$cmd" in
     if [ -z "${ADMIN_PASSWORD:-}" ]; then
       read -rsp "Administrator password for $SITE_NAME: " ADMIN_PASSWORD; echo
     fi
-    log "creating site $SITE_NAME"
+    install_args=()
+    for a in $(image_apps "$ref"); do [ "$a" = frappe ] || install_args+=(--install-app "$a"); done
+    log "creating site $SITE_NAME with: $(image_apps "$ref" | tr '\n' ' ')"
     in_backend bench new-site "$SITE_NAME" \
       --mariadb-user-host-login-scope='%' \
       --db-root-password "$DB_PASSWORD" \
       --admin-password "$ADMIN_PASSWORD" \
-      --install-app erpnext --install-app "$CUSTOM_APP" \
+      "${install_args[@]}" \
       --set-default
     in_backend bench --site "$SITE_NAME" scheduler enable
     in_backend bench --site "$SITE_NAME" scheduler resume
@@ -230,12 +237,15 @@ EOF
     USE_REF="$ref"
     log "migrating with $ref"
     dc run --rm --no-deps -T backend bench --site "$SITE_NAME" migrate || deploy_failed "migration"
-    # The custom app may be new to this site (first deploy after adopt).
-    if ! dc run --rm --no-deps -T backend bench --site "$SITE_NAME" list-apps | grep -q "^$CUSTOM_APP\b"; then
-      log "installing $CUSTOM_APP"
-      dc run --rm --no-deps -T backend bench --site "$SITE_NAME" install-app "$CUSTOM_APP" \
-        || deploy_failed "installing $CUSTOM_APP"
-    fi
+    # Apps new in this image (e.g. after adopt, or one added to apps.json), installed in image
+    # order: translation overrides depend on install order, later apps win.
+    site_apps="$(dc run --rm --no-deps -T backend bench --site "$SITE_NAME" list-apps | awk '{print $1}')"
+    for a in $(image_apps "$ref"); do
+      grep -qx "$a" <<<"$site_apps" && continue
+      log "installing $a"
+      dc run --rm --no-deps -T backend bench --site "$SITE_NAME" install-app "$a" \
+        || deploy_failed "installing $a"
+    done
     site_checks || deploy_failed "site checks after migration"
 
     log "starting all services on $ref (site still in maintenance mode)"

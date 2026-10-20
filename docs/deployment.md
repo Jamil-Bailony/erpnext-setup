@@ -53,12 +53,12 @@ so the same database and sites volumes are reused and nothing is recreated from 
    deploy/deploy.sh adopt pi        # records the running image as the current release
    deploy/deploy.sh backup pi       # backup with site_config.json (encryption key)
    ```
-4. Remove the apps the new image no longer has. Uninstalling also deletes those apps' own
-   data, but neither app stores business data:
+4. Remove the app the new image no longer has. Uninstalling also deletes the app's own
+   data, but saas_theme stores no business data. Keep `arabic_translations`: the image has
+   its newer version, and the deploy migrates it.
    ```bash
-   deploy/dc pi exec backend bench --site erp.local uninstall-app arabic_translations --yes
    deploy/dc pi exec backend bench --site erp.local uninstall-app saas_theme --yes
-   deploy/dc pi exec backend bench --site erp.local list-apps    # frappe, erpnext only
+   deploy/dc pi exec backend bench --site erp.local list-apps    # frappe, erpnext, arabic_translations
    ```
    If an uninstall fails on a "ghost" app (see `docs/archive/erpnext-pi-setup-v3.md`,
    lessons learned), stop here. The site is still running on the old image.
@@ -91,7 +91,7 @@ deploy/deploy.sh deploy pi <image-ref>
 
 `deploy` refuses to start if the site has an app the image lacks. Otherwise it:
 puts the site in maintenance mode → stops traffic and workers → backs up to `BACKUP_DIR`
-→ migrates on the new image → installs `erp_custom` if missing → starts everything →
+→ migrates on the new image → installs apps new in the image (in image order) → starts everything →
 waits for workers and HTTP → reopens the site.
 
 No site reset, no `bench build` on the Pi. Assets come built and checked inside the image.

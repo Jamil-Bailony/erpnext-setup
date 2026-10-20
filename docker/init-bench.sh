@@ -25,9 +25,21 @@ CHANGED=0
 PENDING="$BENCH_DIR/.sync-pending"
 
 # Upstream app not at its pinned ref: warn, or with SYNC=1 fetch and check out the pin.
+# A ref like v16.1.0 is a tag (fixed); anything else is a branch, which sync moves to its tip.
 check_ref() {
   local app="$1" ref="$2" head
   head="$(git -C "apps/$app" rev-parse HEAD)"
+  if ! [[ "$ref" =~ ^v[0-9]+\. ]]; then
+    [ "$SYNC" = 1 ] || return 0
+    git -C "apps/$app" fetch --quiet --depth 1 upstream "$ref"
+    if [ "$head" != "$(git -C "apps/$app" rev-parse FETCH_HEAD)" ]; then
+      echo "==> $app -> tip of $ref"
+      touch "$PENDING"
+      git -C "apps/$app" checkout --quiet -B "$ref" FETCH_HEAD
+      CHANGED=1
+    fi
+    return 0
+  fi
   if [ "$head" = "$(git -C "apps/$app" rev-parse -q --verify "$ref^{commit}" 2>/dev/null)" ]; then
     return
   fi
@@ -71,9 +83,20 @@ bench set-config -g -p disable_mail_smtp_authentication 1
 bench set-config -g auto_email_id dev@erp.localhost
 
 # --- apps ---------------------------------------------------------------------------------
+# The folder is the app's name, which can differ from the repo name
+# (erpnext-arabic-full-translation -> arabic_translations), so find it by its git remote.
+app_dir_for() {
+  local d
+  for d in apps/*/; do
+    [ "$(git -C "$d" remote get-url upstream 2>/dev/null)" = "$1" ] && { basename "$d"; return; }
+  done
+  return 0
+}
+
 get_app() {
-  local app="$1" url="$2" ref="$3"
-  if [ ! -d "apps/$app" ]; then
+  local url="$1" ref="$2" app
+  app="$(app_dir_for "$url")"
+  if [ -z "$app" ]; then
     bench get-app --branch "$ref" "$url"
   elif ! grep -qx "$app" sites/apps.txt; then
     die "apps/$app exists but is not registered in sites/apps.txt (interrupted get-app?). Remove apps/$app and re-run."
@@ -82,12 +105,12 @@ get_app() {
   fi
 }
 
-while read -r app url ref; do
-  get_app "$app" "$url" "$ref"
+while read -r url ref; do
+  get_app "$url" "$ref"
 done < <(python3 -c '
-import json, sys
+import json
 for a in json.load(open("/workspace/apps.json")):
-    print(a["url"].rstrip("/").removesuffix(".git").rsplit("/", 1)[-1], a["url"], a["branch"])
+    print(a["url"], a["branch"])
 ')
 
 # The custom app lives in this repo; link it instead of cloning (what `get-app --soft-link`
