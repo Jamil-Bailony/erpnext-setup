@@ -1,0 +1,12 @@
+{
+  // Keep search and file watching out of the generated bench (~2 GB) and the upstream submodule.
+  "search.exclude": {
+    "development/frappe-bench": true,
+    "deploy/frappe_docker": true,
+    "**/node_modules": true
+  },
+  "files.watcherExclude": {
+    "**/development/frappe-bench/**": true,
+    "**/node_modules/**": true
+  }
+}

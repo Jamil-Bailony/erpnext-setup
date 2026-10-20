@@ -49,13 +49,19 @@ EOF
   mv -f "$STATE_FILE.tmp" "$STATE_FILE"
 }
 
-ensure_image() { docker image inspect "$1" >/dev/null 2>&1 || docker pull "$1"; }
+# Pull the release once and tag it as plain name:tag, which is what compose runs (see deploy/dc).
+ensure_image() {
+  docker image inspect "$1" >/dev/null 2>&1 || docker pull --quiet "$1" >/dev/null || die "cannot pull $1"
+  [ "${1%%@*}" = "$1" ] || docker tag "$1" "${1%%@*}"
+}
+image_id() { docker image inspect -f '{{.Id}}' "$1"; }
 
 # The compose config must run exactly this ref for the Frappe services.
 assert_image() {
   local images
   images="$(USE_REF="$1" dc config --images)"
-  grep -Fxq "$1" <<<"$images" || die "compose would not run $1; it renders: $(tr '\n' ' ' <<<"$images")"
+  grep -Fxq "${1%%@*}" <<<"$images" || die "compose would not run $1; it renders: $(tr '\n' ' ' <<<"$images")"
+  [ "$(image_id "${1%%@*}")" = "$(image_id "$1")" ] || die "${1%%@*} is not tagged to $1"
 }
 
 # Apps of an image, in bench order (frappe, apps.json order, custom app). The sites volume's
@@ -83,7 +89,7 @@ services_ready() {
     for s in backend frontend websocket queue-short queue-long scheduler; do
       cid="$(dc ps --status running -q "$s")"
       if [ -z "$cid" ]; then bad="$bad $s(not running)"
-      elif [ "$(docker inspect -f '{{.Config.Image}}' "$cid")" != "$USE_REF" ]; then bad="$bad $s(wrong image)"
+      elif [ "$(docker inspect -f '{{.Image}}' "$cid")" != "$(image_id "$USE_REF")" ]; then bad="$bad $s(wrong image)"
       fi
     done
     if [ -z "$bad" ] && in_backend bench --site "$SITE_NAME" doctor 2>/dev/null \

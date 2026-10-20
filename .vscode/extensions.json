@@ -1,0 +1,11 @@
+{
+  // Suggested when this folder is opened in VS Code. "Dev Containers" enables
+  // "Reopen in Container" (.devcontainer/); the rest is also installed inside the container.
+  "recommendations": [
+    "ms-vscode-remote.remote-containers",
+    "ms-python.python",
+    "charliermarsh.ruff",
+    "esbenp.prettier-vscode"
+  ],
+  "unwantedRecommendations": []
+}

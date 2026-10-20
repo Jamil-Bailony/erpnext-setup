@@ -17,13 +17,19 @@ set -a; source "$ENV_FILE"; set +a
 # compose gives shell variables priority over --env-file.
 ref="${IMAGE_REF_OVERRIDE:-$( [ -f "$STATE_FILE" ] && sed -n 's/^IMAGE_REF=//p' "$STATE_FILE" || true)}"
 if [ -n "$ref" ]; then
-  # compose.yaml uses CUSTOM_IMAGE:CUSTOM_TAG; the tag may carry @sha256:digest.
+  # compose.yaml uses CUSTOM_IMAGE:CUSTOM_TAG. Compose gets the plain name:tag, never the
+  # @sha256 digest: deploy.sh pulls the exact digest once and tags it locally (ensure_image).
   name="${ref%%@*}"
   [[ "${name##*/}" == *:* ]] || { echo "image ref needs a tag: $ref" >&2; exit 1; }
-  export CUSTOM_IMAGE="${name%:*}" CUSTOM_TAG="${name##*:}${ref#"$name"}"
+  export CUSTOM_IMAGE="${name%:*}" CUSTOM_TAG="${name##*:}"
 else
   export CUSTOM_IMAGE=erp-not-deployed CUSTOM_TAG=none
 fi
+
+# Compose never pulls; deploy.sh does, once. With Docker's containerd image store (default on
+# new installs), compose pulling one image for 7 services at once fails with
+# "cannot overwrite digest", and a pull could also move name:tag off the deployed digest.
+export PULL_POLICY=never
 
 case "${PROXY:-noproxy}" in
   noproxy) proxy="$FD/overrides/compose.noproxy.yaml" ;;

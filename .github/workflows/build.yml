@@ -150,7 +150,6 @@ jobs:
           COMPOSE_PROJECT=erp-ci
           SITE_NAME=ci.localhost
           FRAPPE_SITE_NAME_HEADER=ci.localhost
-          PULL_POLICY=missing
           DB_PASSWORD=$(openssl rand -hex 16)
           COMPOSE_OVERRIDES=compose.pi.yaml
           PROXY=noproxy

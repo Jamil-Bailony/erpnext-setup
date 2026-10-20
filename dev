@@ -59,8 +59,10 @@ Usage: ./dev <command> [args]
                      (files must be inside this repo, e.g. development/scratch/)
   logs [service]     follow container logs
   backup             backup $SITE into development/backups/
-  restore [dir]      replace $SITE with a backup: the newest in development/backups/, or <dir>
-                     (asks first; backs up the current state before restoring)
+  restore [-y] [dir] replace $SITE with a backup: the newest in development/backups/, or <dir>
+                     (one backup per folder). Asks first (-y: don't), backs up the current state,
+                     installs this bench's apps the backup lacks, switches the backup's email
+                     accounts off and sets Administrator's password to the dev one
   reset              erase all data of $SITE and recreate it empty (backup kept, test site untouched)
   destroy            remove containers, volumes and development/frappe-bench (asks first;
                      apps/$CUSTOM_APP is part of this repo and is not touched)
@@ -105,6 +107,7 @@ case "$cmd" in
     curl -fsS -H "Host: $SITE" "http://127.0.0.1:$WEB_PORT/api/method/ping" && echo || echo "site not responding (is bench start running?)" ;;
   backup) compose up -d; backup_site ;;
   restore)
+    yes=0; [ "${1:-}" = "-y" ] && { yes=1; shift; }
     compose up -d
     if [ -n "${1:-}" ]; then src="$1"
     else src="$(ls -d "$ROOT/development/backups/$SITE-"* 2>/dev/null | sort | tail -1)"; fi
@@ -112,28 +115,54 @@ case "$cmd" in
     src="$(cd "$src" && pwd)"
     case "$src" in "$ROOT"/*) ;; *) echo "the backup must be inside $ROOT (the container sees only that)" >&2; exit 1 ;; esac
     rel="${src#"$ROOT/"}"
-    db="$(ls "$src"/*-database.sql.gz 2>/dev/null | head -1)"
-    [ -n "$db" ] || { echo "no *-database.sql.gz in $rel" >&2; exit 1; }
+    [ "$(ls "$src"/*-database.sql.gz 2>/dev/null | wc -l)" = 1 ] \
+      || { echo "$rel must hold exactly one *-database.sql.gz (one backup per folder)" >&2; exit 1; }
+    db="$(ls "$src"/*-database.sql.gz)"
     pub="$(ls "$src"/*-files.tar 2>/dev/null | grep -v private-files | head -1 || true)"
     priv="$(ls "$src"/*-private-files.tar 2>/dev/null | head -1 || true)"
-    conf="$(ls "$src"/*-site_config_backup.json 2>/dev/null | head -1 || true)"
     echo "Replace ALL data of $SITE with $rel"
     echo "  database: ${db##*/}"; echo "  files:    ${pub:+public }${priv:+private}"
     echo "Other backups: $(ls "$ROOT/development/backups" | grep "^$SITE-" | sort -r | sed -n '2,4p' | tr '\n' ' ')"
-    confirm "$SITE"
+    [ "$yes" = 1 ] || confirm "$SITE"
     backup_site
     args=(--db-root-password "${DB_ROOT_PASSWORD:-123}")
     [ -n "$pub" ] && args+=(--with-public-files "/workspace/$rel/${pub##*/}")
     [ -n "$priv" ] && args+=(--with-private-files "/workspace/$rel/${priv##*/}")
-    compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" restore "/workspace/$rel/${db##*/}" "${args[@]}"
-    # Saved passwords are encrypted with the key of the site that made the backup.
-    if [ -n "$conf" ]; then
-      key="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("encryption_key",""))' "$conf")"
-      [ -n "$key" ] && compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" set-config encryption_key "$key"
+    in_site() { compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" "$@"; }
+    in_site restore "/workspace/$rel/${db##*/}" "${args[@]}"
+    # Saved passwords are encrypted with the key of the site that made the backup. Frappe's own
+    # *-site_config_backup.json may lack it; a full site_config.json saved with the backup has it.
+    key="$(python3 -c '
+import json, sys
+for f in sys.argv[1:]:
+    k = json.load(open(f)).get("encryption_key")
+    if k:
+        print(k); break
+' "$src"/*site_config*.json 2>/dev/null || true)"
+    if [ -n "$key" ]; then in_site set-config encryption_key "$key"
+    else echo "WARNING: no encryption_key in $rel; saved passwords of the backup will not decrypt" >&2; fi
+    # Copied production data must not send or fetch real mail: switch its email accounts off,
+    # so outgoing mail falls back to Mailpit.
+    in_site mariadb -e 'set sql_safe_updates = 0; update `tabEmail Account` set enable_outgoing = 0, enable_incoming = 0'
+    in_site set-admin-password "${ADMIN_PASSWORD:-admin}"
+    # Apps installed on the backup's site but missing from this bench would break migrate.
+    site_apps="$(in_site mariadb -N -e 'select app_name from `tabInstalled Application` order by idx')"
+    bench_apps="$(cat "$ROOT/development/frappe-bench/sites/apps.txt")"
+    missing=""; for a in $site_apps; do grep -qx "$a" <<<"$bench_apps" || missing="$missing $a"; done
+    if [ -n "$missing" ]; then
+      cat >&2 <<MSG
+Restored, but the site has apps this bench lacks:$missing
+Not migrated yet. Either add the app (./dev bench get-app <url> --branch <branch>), or remove
+it from the site after adding it (uninstall-app), then run: ./dev bench --site $SITE migrate
+MSG
+      exit 1
     fi
-    compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" migrate
-    compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" clear-cache
-    echo "Restored $SITE from $rel. Previous state saved in $BACKUP." ;;
+    in_site migrate
+    # Apps of this bench the backup's site does not have yet (e.g. erp_custom), in bench order.
+    for a in $bench_apps; do grep -qx "$a" <<<"$site_apps" || in_site install-app "$a"; done
+    in_site clear-cache
+    echo "Restored $SITE from $rel (Administrator / ${ADMIN_PASSWORD:-admin}, email accounts off)."
+    echo "Previous state saved in $BACKUP." ;;
   reset)
     echo "This erases every record and uploaded file of $SITE and creates it again, empty."
     echo "A backup is taken first (development/backups/); the old site folder is moved to"
