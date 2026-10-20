@@ -148,10 +148,14 @@ backup() {
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   BACKUP_DEST="$BACKUP_DIR/$stamp"
   log "backup $SITE_NAME -> $BACKUP_DEST"
-  in_backend rm -rf "$site_dir/private/backups/deploy"
-  in_backend bench --site "$SITE_NAME" backup --with-files --backup-path "$site_dir/private/backups/deploy"
+  # Stage outside private/backups: Frappe's own backup cleanup (run by uninstall-app and the
+  # scheduler) crashes on a sub-folder there. The old staging folder is removed for that reason.
+  local stage=/tmp/deploy-backup
+  in_backend rm -rf "$stage" "$site_dir/private/backups/deploy"
+  in_backend bench --site "$SITE_NAME" backup --with-files --backup-path "$stage"
   mkdir -p "$BACKUP_DEST"
-  dc cp "backend:$site_dir/private/backups/deploy/." "$BACKUP_DEST/"
+  dc cp "backend:$stage/." "$BACKUP_DEST/"
+  in_backend rm -rf "$stage"
   # site_config.json holds the encryption key; a restore without it loses encrypted fields.
   dc cp "backend:$site_dir/site_config.json" "$BACKUP_DEST/site_config.json"
   echo "IMAGE_REF=$(state_get IMAGE_REF)" > "$BACKUP_DEST/image.env"
