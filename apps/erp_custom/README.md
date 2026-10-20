@@ -9,6 +9,11 @@ and not as patches in the image build.
   Noto Sans Arabic (body) and Noto Kufi Arabic (headings). Latin text keeps Frappe's Inter.
   The fonts ship with the app (`public/fonts`), so they load on the private network with no
   internet access.
+- **Truncated Arabic text** (`public/scss/_truncation.scss`): Frappe cuts long labels with
+  `overflow: hidden` on tight line-heights, which cut off the bottoms of Arabic letters (the
+  dots of ي, the tails of ر ن). In the Arabic UI those labels clip sideways only, so the ellipsis
+  stays and the letters show in full, with no change to line-heights. After an upgrade, add any
+  new clipped label to the selector list there.
 
 ## Adding things
 

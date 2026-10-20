@@ -1,0 +1,70 @@
+// Truncated Arabic text: keep the bottoms of the letters
+//
+// Problem: Frappe cuts long single-line text with `overflow: hidden` + an ellipsis, on tight
+// line-heights (1.15, sometimes 1). Inter sets the line box and reserves only 0.24em below the
+// baseline, but Noto Sans Arabic letters reach 0.42em below it (the dots of ي, the tails of ج ح م).
+// So in the Arabic UI the bottoms get cut off: "يومي" reads as "يومى".
+//
+// Fix: in the Arabic UI, clip those elements sideways only. `overflow-x: clip` still gives the
+// ellipsis; `overflow-y: visible` lets the letters draw below the box. Line-heights and box sizes
+// do not change, so the layout looks the same as before.
+//
+// The selectors repeat Frappe's own (from the built desk CSS, v16) behind `html:lang(ar)`, so they
+// always outrank them. If an upgrade adds a new clipped label, add its selector here.
+
+$erp-truncated-text: (
+	// Generic helpers. The image view turns .ellipsis into a 2-line clamp, which needs the
+	// vertical clipping to hide the third line, so it is left out.
+	".ellipsis:not(.image-title *)",
+	".text-truncate",
+	".truncate",
+	".grid-overflow-ellipsis",
+	// Espresso components
+	".es-badge__label",
+	".es-breadcrumbs li:last-child .es-breadcrumbs__label",
+	".es-menu__label",
+	".es-menu__description",
+	".es-stepper__label",
+	// Sidebars
+	".body-sidebar .standard-sidebar-item .sidebar-item-label",
+	".body-sidebar .standard-sidebar-item .item-anchor",
+	".body-sidebar .promotional-banner span",
+	".standard-sidebar .standard-sidebar-item .sidebar-item-label",
+	".search-dialog .search-results .search-sidebar .standard-sidebar-item .sidebar-item-label",
+	".form-sidebar .user-actions .user-action-label",
+	".settings-dialog-tab-label",
+	// Page header, reports, trees, lists
+	".title-container",
+	".header-title",
+	".header-subtitle",
+	".report-summary .summary-label",
+	".report-summary .summary-value",
+	".report-summary .summary-value div",
+	".tree.tree-rows .tree-link .tree-label",
+	".recent-item.event .event-item .event-subject",
+	".dt-cell__content",
+	".arrangement-editor .ws-item .ws-item-label",
+	".arrangement-editor .ws-preview-item .ws-item-label",
+	// Desktop (/app/desktop) app tiles
+	"body.desktop-page .icon-title"
+);
+
+html:lang(ar) {
+	@each $selector in $erp-truncated-text {
+		#{$selector} {
+			overflow-x: clip;
+			overflow-y: visible;
+		}
+	}
+}
+
+// With `overflow: hidden` these could shrink below their text inside flex rows (a scroll
+// container's automatic min-width is 0); with `clip` they would not. Restore that. `:where`
+// gives this rule zero specificity, so any min-width Frappe sets still wins.
+:where(html:lang(ar)) {
+	@each $selector in $erp-truncated-text {
+		:where(#{$selector}) {
+			min-width: 0;
+		}
+	}
+}
