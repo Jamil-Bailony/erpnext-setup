@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Clean Honcho SocketIO Watch Schedule Worker",
+      "detail": "Stopping the debugger does not send SIGINT to honcho; this does.",
+      "type": "shell",
+      "command": "pkill -SIGINT -f bench; pkill -SIGINT -f socketio",
+      "presentation": { "reveal": "silent", "panel": "shared", "close": true }
+    }
+  ]
+}

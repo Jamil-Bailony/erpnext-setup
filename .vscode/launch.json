@@ -1,0 +1,46 @@
+{
+  // Debugging inside "Reopen in Container", adapted from frappe_docker development/vscode-example.
+  // Stop ./dev start first: "Bench Web" takes port 8001 itself.
+  // "Honcho + Web debug" = everything bench start runs, with the web server under the debugger.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Bench Web",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/development/frappe-bench/env/bin/python",
+      "program": "${workspaceFolder}/development/frappe-bench/apps/frappe/frappe/utils/bench_helper.py",
+      "args": ["frappe", "serve", "--port", "8001", "--noreload", "--nothreading"],
+      "cwd": "${workspaceFolder}/development/frappe-bench/sites",
+      "env": { "DEV_SERVER": "1" }
+    },
+    {
+      "name": "Bench Worker (all queues)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/development/frappe-bench/env/bin/python",
+      "program": "${workspaceFolder}/development/frappe-bench/apps/frappe/frappe/utils/bench_helper.py",
+      "args": ["frappe", "worker", "--queue", "short,default,long"],
+      "cwd": "${workspaceFolder}/development/frappe-bench/sites",
+      "env": { "DEV_SERVER": "1" }
+    },
+    {
+      "name": "Honcho SocketIO Watch Schedule Worker",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "/home/frappe/.pyenv/shims/python",
+      "program": "/home/frappe/.local/bin/honcho",
+      "cwd": "${workspaceFolder}/development/frappe-bench",
+      "console": "internalConsole",
+      "args": ["start", "socketio", "watch", "schedule", "worker"],
+      "postDebugTask": "Clean Honcho SocketIO Watch Schedule Worker"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Honcho + Web debug",
+      "configurations": ["Bench Web", "Honcho SocketIO Watch Schedule Worker"],
+      "stopAll": true
+    }
+  ]
+}

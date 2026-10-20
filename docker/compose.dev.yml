@@ -1,0 +1,77 @@
+# Local development stack. Not for deployments (see deploy/).
+# Based on frappe_docker devcontainer-example. Use it through ./dev, which loads versions.env.
+#
+# Ports default to 8001/9001/8026 so this runs next to other Frappe dev stacks on 8000/9000/8025.
+# The bench is configured to listen on the same ports inside (docker/init-bench.sh).
+
+name: erp-dev
+
+services:
+  mariadb:
+    image: docker.io/mariadb:11.8
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-123}
+      MARIADB_AUTO_UPGRADE: 1
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      retries: 20
+
+  redis-cache:
+    image: docker.io/redis:8.6-alpine
+
+  redis-queue:
+    image: docker.io/redis:8.6-alpine
+    volumes:
+      - redis-queue-data:/data
+
+  # Catches every email the dev sites send. Web UI: http://localhost:8026
+  mailpit:
+    image: docker.io/axllent/mailpit:v1.31.5
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+      MP_DATABASE: /data/mailpit.db
+    volumes:
+      - mailpit-data:/data
+    ports:
+      - "127.0.0.1:${DEV_MAIL_PORT:-8026}:8025"
+
+  frappe:
+    image: ${BENCH_IMAGE:?BENCH_IMAGE not set - run through ./dev}
+    command: sleep infinity
+    environment:
+      SHELL: /bin/bash
+      SITE: ${SITE:-erp.localhost}
+      TEST_SITE: ${TEST_SITE:-test.localhost}
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-123}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      DEV_WEB_PORT: ${DEV_WEB_PORT:-8001}
+      DEV_SOCKETIO_PORT: ${DEV_SOCKETIO_PORT:-9001}
+    volumes:
+      - ..:/workspace:cached
+    working_dir: /workspace/development
+    ports:
+      - "127.0.0.1:${DEV_WEB_PORT:-8001}:${DEV_WEB_PORT:-8001}"   # web
+      - "127.0.0.1:${DEV_SOCKETIO_PORT:-9001}:${DEV_SOCKETIO_PORT:-9001}"   # socketio
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis-cache:
+        condition: service_started
+      redis-queue:
+        condition: service_started
+      mailpit:
+        condition: service_started
+
+volumes:
+  mariadb-data:
+  redis-queue-data:
+  mailpit-data:

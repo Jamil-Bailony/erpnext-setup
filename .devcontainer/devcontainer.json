@@ -1,0 +1,43 @@
+{
+  // VS Code "Reopen in Container" for the same stack ./dev uses. Optional: ./dev works without VS Code.
+  "name": "ERP (Frappe bench)",
+  "dockerComposeFile": "../docker/compose.dev.yml",
+  "service": "frappe",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "frappe",
+  "shutdownAction": "none",
+  "forwardPorts": [8001, 9001],
+  "postCreateCommand": "uv tool install pre-commit",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.debugpy",
+        "charliermarsh.ruff",
+        "esbenp.prettier-vscode",
+        "vue.volar",
+        "mtxr.sqltools",
+        "mtxr.sqltools-driver-mysql",
+        "eamodio.gitlens"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/development/frappe-bench/env/bin/python",
+        "terminal.integrated.cwd": "/workspace/development/frappe-bench",
+        "git.repositoryScanMaxDepth": 4,
+        "git.repositoryScanIgnoredFolders": ["node_modules", "env", "sites", "frappe", "erpnext"],
+        "sqltools.connections": [
+          {
+            "name": "MariaDB (dev)",
+            "driver": "MariaDB",
+            "server": "mariadb",
+            "port": 3306,
+            "username": "root",
+            "password": "123",
+            "database": "mysql",
+            "mysqlOptions": { "authProtocol": "default", "enableSsl": "Disabled" }
+          }
+        ]
+      }
+    }
+  }
+}

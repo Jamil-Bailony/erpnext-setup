@@ -117,6 +117,20 @@ missing_apps() {
 Back up, then: deploy/dc $ENV_NAME exec backend bench --site $SITE_NAME uninstall-app <app> --yes"
 }
 
+# After maintenance mode is switched off, each gunicorn worker keeps serving 503 "Updating"
+# until its in-memory site_config cache expires (Frappe: 60s). Wait for 20 straight 200s,
+# so they spread over all workers.
+wait_reopened() {
+  local i ok=0
+  for i in $(seq 1 120); do
+    if [ "$(http_code)" = 200 ]; then ok=$((ok + 1)); else ok=0; fi
+    [ "$ok" -ge 20 ] && { log "site open on all workers"; return 0; }
+    sleep 1
+  done
+  echo "site still answers 503 on some workers" >&2
+  return 1
+}
+
 BACKUP_DEST=""
 backup() {
   local stamp site_dir=/home/frappe/frappe-bench/sites/$SITE_NAME
@@ -231,6 +245,7 @@ EOF
 
     in_backend bench --site "$SITE_NAME" set-maintenance-mode off
     wait_http 200 || deploy_failed "site does not answer after reopening"
+    wait_reopened || deploy_failed "site does not answer after reopening"
 
     write_state "$ref" "$FROM_REF" "$BACKUP_DEST"
     rm -f "$PENDING_FILE"

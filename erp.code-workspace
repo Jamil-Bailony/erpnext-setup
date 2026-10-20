@@ -1,0 +1,25 @@
+{
+	"folders": [
+		{ "name": "erp (infra)", "path": "." },
+		{ "name": "erp_custom (app)", "path": "apps/erp_custom" }
+	],
+	"settings": {
+		"git.autoRepositoryDetection": true,
+		"git.repositoryScanMaxDepth": 1,
+		"search.exclude": {
+			"**/frappe-bench/env": true,
+			"**/frappe-bench/sites": true,
+			"**/frappe-bench/logs": true,
+			"**/frappe-bench/apps": true,
+			"deploy/frappe_docker": true,
+			"**/node_modules": true
+		},
+		"files.watcherExclude": {
+			"**/frappe-bench/env/**": true,
+			"**/frappe-bench/sites/**": true,
+			"**/frappe-bench/logs/**": true,
+			"**/frappe-bench/apps/**": true,
+			"**/node_modules/**": true
+		}
+	}
+}

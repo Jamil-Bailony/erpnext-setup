@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Development entry point. Run ./dev help for commands.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SITE="${SITE:-erp.localhost}"
+TEST_SITE="${TEST_SITE:-test.localhost}"
+BENCH_WD=/workspace/development/frappe-bench
+
+compose() {
+  docker compose --env-file "$ROOT/versions.env" -f "$ROOT/docker/compose.dev.yml" "$@"
+}
+
+# exec in the frappe container, with a TTY only when we have one
+in_bench() {
+  local tty=(-T)
+  [ -t 0 ] && [ -t 1 ] && tty=()
+  compose exec "${tty[@]}" -w "$BENCH_WD" frappe "$@"
+}
+
+set -a; source "$ROOT/versions.env"; set +a
+WEB_PORT="${DEV_WEB_PORT:-8001}"
+
+# Ask the user to type a word before something destructive.
+confirm() {
+  local want="$1" got
+  [ -t 0 ] || { echo "refusing: needs an interactive terminal" >&2; exit 1; }
+  read -rp "Type '$want' to continue: " got
+  [ "$got" = "$want" ] || { echo "aborted"; exit 1; }
+}
+
+# Backup $SITE (database, files, site config) into development/backups/<site>-<UTC time>/.
+backup_site() {
+  BACKUP="development/backups/$SITE-$(date -u +%Y%m%dT%H%M%SZ)"
+  in_bench bench --site "$SITE" backup --with-files --backup-path "/workspace/$BACKUP" >/dev/null \
+    || { echo "backup of $SITE failed" >&2; exit 1; }
+  echo "==> backup of $SITE: $BACKUP"
+}
+
+usage() {
+  cat <<EOF
+Usage: ./dev <command> [args]
+
+  up                 start containers
+  init               start containers and create/repair the bench and site (idempotent)
+  sync               like init, and move Frappe/ERPNext to the versions.env/apps.json pins, then migrate
+  start              run bench start in the foreground (Ctrl+C to stop)
+  start -d           run bench start in the background, logging to development/bench-start.log
+  stop               stop a background bench start
+  down               stop containers (data volumes kept)
+  bench <args>       run a bench command, e.g. ./dev bench --site $SITE migrate
+  shell              bash in the frappe container
+  console            bench console for the site
+  mariadb            mariadb shell for the site
+  test [args]        bench run-tests on the test site ($TEST_SITE), e.g. ./dev test --app $CUSTOM_APP
+  meta <DocType> [-a] [-l]   compact field list of a DocType (-a layout breaks, -l workflows,
+                     property setters, child tables, linked from); a partial name lists matches
+  run <file.py>      run a Python file against $SITE with frappe connected, then commit
+                     (files must be inside this repo, e.g. development/scratch/)
+  logs [service]     follow container logs
+  backup             backup $SITE into development/backups/
+  restore [dir]      replace $SITE with a backup: the newest in development/backups/, or <dir>
+                     (asks first; backs up the current state before restoring)
+  reset              erase all data of $SITE and recreate it empty (backup kept, test site untouched)
+  destroy            remove containers, volumes and development/frappe-bench (asks first;
+                     apps/$CUSTOM_APP is part of this repo and is not touched)
+  status             containers, app versions and site ping
+
+Site: http://$SITE:$WEB_PORT (Administrator / admin). Mail: http://localhost:${DEV_MAIL_PORT:-8026}
+
+Environment overrides: SITE, TEST_SITE, ADMIN_PASSWORD, DB_ROOT_PASSWORD (first init only),
+DEV_WEB_PORT, DEV_SOCKETIO_PORT, DEV_MAIL_PORT.
+EOF
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  up)      compose up -d ;;
+  init)    compose up -d && compose exec -T frappe bash /workspace/docker/init-bench.sh ;;
+  sync)    compose up -d && compose exec -T -e SYNC=1 frappe bash /workspace/docker/init-bench.sh ;;
+  start)
+    if [ "${1:-}" = "-d" ]; then
+      compose exec -d -w "$BENCH_WD" frappe bash -c 'bench start > /workspace/development/bench-start.log 2>&1'
+      echo "bench start running in background -> development/bench-start.log, http://$SITE:$WEB_PORT"
+    else
+      in_bench bench start
+    fi ;;
+  stop)    compose exec -T frappe pkill -f '[h]oncho start' || true ;;
+  down)    compose down ;;
+  bench)   in_bench bench "$@" ;;
+  shell)   in_bench bash ;;
+  console) in_bench bench --site "$SITE" console ;;
+  mariadb) in_bench bench --site "$SITE" mariadb ;;
+  test)    in_bench bench --site "$TEST_SITE" run-tests "$@" ;;
+  meta)    [ -n "${1:-}" ] || { usage; exit 1; }
+           compose exec -T -w "$BENCH_WD/sites" frappe "$BENCH_WD/env/bin/python" /workspace/scripts/frappe-meta.py "$SITE" "$@" ;;
+  run)     [ -f "${1:-}" ] || { echo "usage: ./dev run <file.py inside this repo>" >&2; exit 1; }
+           f="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+           case "$f" in "$ROOT"/*) ;; *) echo "the file must be inside $ROOT" >&2; exit 1 ;; esac
+           compose exec -T -w "$BENCH_WD/sites" frappe "$BENCH_WD/env/bin/python" /workspace/scripts/frappe-run.py "$SITE" "/workspace/${f#"$ROOT/"}" ;;
+  logs)    compose logs -f "$@" ;;
+  status)
+    compose ps
+    in_bench bench version || true
+    curl -fsS -H "Host: $SITE" "http://127.0.0.1:$WEB_PORT/api/method/ping" && echo || echo "site not responding (is bench start running?)" ;;
+  backup) compose up -d; backup_site ;;
+  restore)
+    compose up -d
+    if [ -n "${1:-}" ]; then src="$1"
+    else src="$(ls -d "$ROOT/development/backups/$SITE-"* 2>/dev/null | sort | tail -1)"; fi
+    [ -n "$src" ] && [ -d "$src" ] || { echo "no backup found (development/backups/$SITE-*)" >&2; exit 1; }
+    src="$(cd "$src" && pwd)"
+    case "$src" in "$ROOT"/*) ;; *) echo "the backup must be inside $ROOT (the container sees only that)" >&2; exit 1 ;; esac
+    rel="${src#"$ROOT/"}"
+    db="$(ls "$src"/*-database.sql.gz 2>/dev/null | head -1)"
+    [ -n "$db" ] || { echo "no *-database.sql.gz in $rel" >&2; exit 1; }
+    pub="$(ls "$src"/*-files.tar 2>/dev/null | grep -v private-files | head -1 || true)"
+    priv="$(ls "$src"/*-private-files.tar 2>/dev/null | head -1 || true)"
+    conf="$(ls "$src"/*-site_config_backup.json 2>/dev/null | head -1 || true)"
+    echo "Replace ALL data of $SITE with $rel"
+    echo "  database: ${db##*/}"; echo "  files:    ${pub:+public }${priv:+private}"
+    echo "Other backups: $(ls "$ROOT/development/backups" | grep "^$SITE-" | sort -r | sed -n '2,4p' | tr '\n' ' ')"
+    confirm "$SITE"
+    backup_site
+    args=(--db-root-password "${DB_ROOT_PASSWORD:-123}")
+    [ -n "$pub" ] && args+=(--with-public-files "/workspace/$rel/${pub##*/}")
+    [ -n "$priv" ] && args+=(--with-private-files "/workspace/$rel/${priv##*/}")
+    compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" restore "/workspace/$rel/${db##*/}" "${args[@]}"
+    # Saved passwords are encrypted with the key of the site that made the backup.
+    if [ -n "$conf" ]; then
+      key="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("encryption_key",""))' "$conf")"
+      [ -n "$key" ] && compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" set-config encryption_key "$key"
+    fi
+    compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" migrate
+    compose exec -T -w "$BENCH_WD" frappe bench --site "$SITE" clear-cache
+    echo "Restored $SITE from $rel. Previous state saved in $BACKUP." ;;
+  reset)
+    echo "This erases every record and uploaded file of $SITE and creates it again, empty."
+    echo "A backup is taken first (development/backups/); the old site folder is moved to"
+    echo "development/frappe-bench/archived/sites/."
+    confirm "$SITE"
+    compose up -d
+    # Our own backup, because drop-site --force carries on when its backup fails.
+    backup_site
+    # No TTY here: drop-site hangs when it runs on a terminal.
+    compose exec -T -w "$BENCH_WD" frappe \
+      bench drop-site "$SITE" --force --no-backup --db-root-password "${DB_ROOT_PASSWORD:-123}"
+    compose exec -T frappe bash /workspace/docker/init-bench.sh
+    echo "Fresh $SITE ready; backup in $BACKUP. Run the setup wizard at http://$SITE:$WEB_PORT." ;;
+  destroy)
+    echo "This removes the dev containers, the database and mail volumes, and development/frappe-bench"
+    echo "(bench, sites, Frappe/ERPNext checkouts). apps/$CUSTOM_APP and the rest of this repo stay."
+    confirm destroy
+    compose down -v --remove-orphans
+    # Files were written by the container's user; remove them through a container in case the uid differs.
+    docker run --rm -u 0 -v "$ROOT/development:/d" "$BENCH_IMAGE" bash -c 'rm -rf /d/frappe-bench /d/*.log'
+    echo "Done. To delete the checkout too: rm -rf \"$ROOT\"" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac
