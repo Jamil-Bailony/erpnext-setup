@@ -39,102 +39,8 @@ cp deploy/env/example.env deploy/env/pi.env     # then edit it
 
 ## 3. Moving the existing Pi stack over (once)
 
-The current stack runs under compose project `erpnext` with site `erp.local`, from
-`~/erpnext-docker/dc.sh`. Keep that project name in `pi.env` (`COMPOSE_PROJECT=erpnext`),
-so the same database and sites volumes are reused and nothing is recreated from scratch.
-
-### 3a. First: make the nightly backup keep the encryption key
-
-`~/erpnext-docker/backup.sh` saves the database and files but not `site_config.json`, and
-Frappe's own `*-site_config_backup.json` has no `encryption_key`. Without the key a restore
-keeps all data but loses every saved password (email accounts, API keys). On the Pi, add after
-the `bench ... backup --with-files` line of `backup.sh`:
-
-```bash
-STAMP=$(ls -t "$LOCAL_BACKUP_DIR"/*-database.sql.gz | head -1 | xargs basename | sed 's/-database.sql.gz//')
-docker exec erpnext-backend-1 cat sites/erp.local/site_config.json > "$LOCAL_BACKUP_DIR/$STAMP-site_config.json"
-chmod 600 "$LOCAL_BACKUP_DIR/$STAMP-site_config.json"
-```
-
-Check the line that copies the backup into `$LOCAL_BACKUP_DIR` runs before this (adjust if
-your script copies afterwards). Run `backup.sh` once by hand and confirm
-`grep -c encryption_key /mnt/backup/erpnext-site-backups/*-site_config.json` finds it.
-`./dev restore` and a manual restore both pick that file up.
-
-### 3b. Rehearse on the PC (dev environment)
-
-Done once on 2026-10-20 with the 19 Oct backup: clean uninstall, no leftovers, data and
-desk fine. Repeat it with a fresh backup right before the real move:
-
-```bash
-# 1. one backup per folder, inside the repo (the dev container only sees the repo)
-mkdir -p development/backups/pi-<date>
-cp ~/erpnext-backups-from-pi/<stamp>-erp_local-* development/backups/pi-<date>/
-#    plus <stamp>-site_config.json once 3a is in place
-
-# 2. the backup's site has saas_theme installed: give the dev bench its code for now
-./dev bench get-app https://github.com/vineyrawat/saas_theme --branch version-16
-
-# 3. restore into erp.localhost (asks first; backs up the dev site; switches the backup's
-#    email accounts off; Administrator / admin; installs erp_custom)
-./dev restore development/backups/pi-<date>
-
-# 4. the step to rehearse
-./dev bench --site erp.localhost uninstall-app saas_theme --yes
-./dev bench --site erp.localhost list-apps   # frappe, erpnext, arabic_translations, erp_custom
-
-# 5. drop its code like the new image does, then migrate again: must finish without errors
-./dev bench remove-app saas_theme --no-backup --force
-./dev bench --site erp.localhost migrate
-
-# 6. look: ./dev start, http://erp.localhost:8001 - log in as an Arabic user too
-#    (./dev bench --site erp.localhost set-password <email> <pw>), open invoices, reports,
-#    check fonts and translations
-```
-
-To start over: run `./dev restore` again (step 2 is needed again only after step 5).
-
-### 3c. On the Pi
-
-1. Host setup from section 2: clone to `~/erp`. The GHCR package is public, so no
-   `docker login` is needed.
-2. In `deploy/env/pi.env` set `DB_PASSWORD` to the value from `~/erpnext-docker/.env`
-   (the database volume only accepts its original password), `COMPOSE_PROJECT=erpnext`,
-   `SITE_NAME=erp.local`, `FRAPPE_SITE_NAME_HEADER=erp.local`,
-   `COMPOSE_OVERRIDES=compose.pi.yaml`, `BACKUP_DIR=/mnt/backup/erp-deploy-backups`.
-3. With the old stack running:
-   ```bash
-   deploy/deploy.sh adopt pi        # records the running image as the current release
-   deploy/deploy.sh backup pi       # backup including site_config.json (encryption key)
-   ```
-   Copy that backup folder to the PC as well.
-4. Remove saas_theme (as rehearsed). Uninstalling deletes only the app's own data; it has no
-   business data. Keep `arabic_translations`: the image has its newer version.
-   ```bash
-   deploy/dc pi exec backend bench --site erp.local uninstall-app saas_theme --yes
-   deploy/dc pi exec backend bench --site erp.local list-apps    # frappe, erpnext, arabic_translations
-   ```
-   If this fails, stop here: the site still runs on the old image, nothing else changed.
-5. Deploy the image from CI (the run summary prints the ref):
-   ```bash
-   deploy/deploy.sh deploy pi ghcr.io/jamil-bailony/erp:<sha>@sha256:<digest>
-   ```
-   It refuses to start if the site still has an app the image lacks. Otherwise: backup,
-   migrate, install `erp_custom`, start, checks, reopen.
-6. Retire the old tooling. Do **not** run `~/erpnext-docker/dc.sh up` again: it would
-   recreate the containers on the old image. In `~/erpnext-docker/backup.sh` replace
-   ```bash
-   cd ~/erpnext-docker
-   ./dc.sh exec backend bench --site "$SITE" backup --with-files
-   ```
-   with
-   ```bash
-   ~/erp/deploy/dc pi exec -T backend bench --site "$SITE" backup --with-files
-   ```
-   The rest of the backup system is unchanged, because container names (`erpnext-backend-1`,
-   `erpnext-db-1`) stay the same.
-7. Clean up old images once all is well: `docker images | grep custom`, `docker rmi …`,
-   `docker builder prune -a`. Keep `~/frappe_docker` for reference or delete it.
+Step by step, with the backup setup (Pi nightly + PC pull + monthly restore test):
+[pi-setup.md](pi-setup.md).
 
 ## 4. Deploying a new release
 
@@ -174,7 +80,7 @@ Each backup is `BACKUP_DIR/<UTC timestamp>/`: database, public and private files
    `deploy/state/pi.env`; set it back there if needed, then `deploy/dc pi up -d`).
 2. Copy the files in and restore (`ls "$B"` shows the `<name>` prefix of the files):
    ```bash
-   B=/mnt/backup/erp-deploy-backups/<stamp>
+   B=/mnt/backup/erp-backups/<stamp>
    S=/home/frappe/frappe-bench/sites/erp.local/private/backups/restore
    deploy/dc pi exec backend mkdir -p $S
    deploy/dc pi cp "$B/." backend:$S/

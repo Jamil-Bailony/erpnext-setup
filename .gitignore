@@ -15,6 +15,7 @@ development/*.log
 deploy/env/*.env
 !deploy/env/example.env
 deploy/state/
+deploy/logs/
 
 __pycache__/
 *.pyc

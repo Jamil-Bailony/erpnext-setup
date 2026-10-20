@@ -6,7 +6,8 @@ and later fields, reports, scripts). Runs on a Raspberry Pi 4 for 3–5 users ov
 image and scripts move to a server later.
 
 The image is built by GitHub Actions (arm64 + amd64), never on the Pi.
-Runbook: [docs/deployment.md](docs/deployment.md).
+Runbooks: [docs/deployment.md](docs/deployment.md) (build, deploy, restore, server) and
+[docs/pi-setup.md](docs/pi-setup.md) (moving the Pi over, backups).
 
 ## Development
 
@@ -50,6 +51,8 @@ Needs Docker with Compose. Everything goes through `./dev` (or VS Code "Reopen i
 | `.github/workflows/build.yml` | CI: build, push to GHCR, verify (install + upgrade) |
 | `deploy/frappe_docker/` | Upstream compose files (git submodule, pinned) |
 | `deploy/dc`, `deploy/deploy.sh` | Compose wrapper and init/deploy/backup/status |
+| `deploy/nightly-backup.sh` | Cron job on the Pi: backup, verify, prune |
+| `scripts/pull-backups.sh` | Cron job on the PC: pull the Pi's backups, check them |
 | `deploy/compose.base.yaml` | Our overrides for every host (log rotation) |
 | `deploy/compose.pi.yaml` | Pi memory tuning |
 | `deploy/env/example.env` | Template for `deploy/env/<host>.env` (git-ignored) |

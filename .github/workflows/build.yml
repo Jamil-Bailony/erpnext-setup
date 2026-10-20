@@ -158,7 +158,13 @@ jobs:
           EOF
           df -h / | tee "$RUNNER_TEMP/verify.log"
           ADMIN_PASSWORD="$(openssl rand -hex 16)" deploy/deploy.sh init ci "$IMAGE_REF" 2>&1 | tee -a "$RUNNER_TEMP/verify.log"
+          # Like the Pi's first deploy: the site lacks the custom app and the sites volume still
+          # has an older apps.txt without it. deploy must fix both.
+          app="$(sed -n 's/^CUSTOM_APP=//p' versions.env)"
+          deploy/dc ci exec -T backend bench --site ci.localhost uninstall-app "$app" --yes --no-backup
+          deploy/dc ci exec -T backend bash -c "grep -vx $app sites/apps.txt > /tmp/apps.txt; cp /tmp/apps.txt sites/apps.txt"
           deploy/deploy.sh deploy ci "$IMAGE_REF" 2>&1 | tee -a "$RUNNER_TEMP/verify.log"
+          deploy/dc ci exec -T backend bench --site ci.localhost list-apps | grep "^$app\b"
 
       - name: Frontend and custom assets
         run: |

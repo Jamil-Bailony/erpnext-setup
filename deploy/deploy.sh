@@ -241,6 +241,10 @@ EOF
     dc stop -t "$STOP_TIMEOUT" backend
 
     USE_REF="$ref"
+    # The sites volume still has the old image's apps.txt until the configurator runs; migrate
+    # and install-app read it, so refresh it (and the bench config) from the new image first.
+    log "configuring sites volume for $ref"
+    dc run --rm --no-deps -T configurator >/dev/null || deploy_failed "configurator"
     log "migrating with $ref"
     dc run --rm --no-deps -T backend bench --site "$SITE_NAME" migrate || deploy_failed "migration"
     # Apps new in this image (e.g. after adopt, or one added to apps.json), installed in image
