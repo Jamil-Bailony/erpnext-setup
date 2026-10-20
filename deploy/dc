@@ -26,6 +26,9 @@ else
   export CUSTOM_IMAGE=erp-not-deployed CUSTOM_TAG=none
 fi
 
+# The host's platform, for compose.base.yaml (upstream pins linux/amd64).
+export HOST_PLATFORM="linux/$(docker version --format '{{.Server.Arch}}')"
+
 # Compose never pulls; deploy.sh does, once. With Docker's containerd image store (default on
 # new installs), compose pulling one image for 7 services at once fails with
 # "cannot overwrite digest", and a pull could also move name:tag off the deployed digest.

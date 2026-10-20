@@ -8,14 +8,21 @@ x-logging: &logging
       max-size: "20m"
       max-file: "5"
 
+# Upstream compose.yaml pins every Frappe service to platform linux/amd64. Our image is
+# multi-arch; run the host's own variant (HOST_PLATFORM is set by deploy/dc), so the same
+# files work on the Pi (arm64) and a server (amd64).
+x-frappe: &frappe
+  <<: *logging
+  platform: ${HOST_PLATFORM:?run through deploy/dc}
+
 services:
-  configurator: *logging
-  backend: *logging
-  frontend: *logging
-  websocket: *logging
-  queue-short: *logging
-  queue-long: *logging
-  scheduler: *logging
+  configurator: *frappe
+  backend: *frappe
+  frontend: *frappe
+  websocket: *frappe
+  queue-short: *frappe
+  queue-long: *frappe
+  scheduler: *frappe
   db: *logging
   redis-cache: *logging
   redis-queue: *logging
