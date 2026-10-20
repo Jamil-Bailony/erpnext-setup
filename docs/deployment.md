@@ -27,6 +27,19 @@ works but is slow, since it emulates arm64.
 Actions → Build → the run summary prints the image ref to deploy, e.g.
 `ghcr.io/owner/erp:1a2b3c4@sha256:…`. Always deploy the `@sha256` form.
 
+What a push costs:
+
+| Changed | CI does | Pi downloads |
+|---|---|---|
+| docs, `dev`, `development/`, `docker/`, `scripts/` | nothing (no run) | nothing |
+| `deploy/` scripts only | reuses the image (tag `inputs-<hash>`), runs verify | nothing new |
+| `apps/erp_custom` | rebuilds only the custom-app layer (~2 min) | ~40 MB |
+| `apps.json`, `versions.env` (new Frappe/ERPNext) | full build (~8 min) | ~1.6 GB |
+
+The Frappe + ERPNext bench is its own image layer, cached in GHCR
+(`buildcache-arm64`/`-amd64` tags). Actions → Build → Run workflow → "force_build" rebuilds
+even when nothing changed.
+
 ## 2. Host setup (once per host)
 
 ```bash

@@ -2,6 +2,11 @@
 # publish one multi-arch tag to GHCR, then verify it on a throwaway stack (fresh install,
 # then a full deploy over it). The run summary prints the ref to deploy.
 #
+# Build time: docs and dev-only changes don't trigger this at all (paths below). A commit that
+# changes deploy scripts but none of the image's inputs reuses the existing image (plan job)
+# and only runs verify. The image keeps Frappe + ERPNext in their own cached layer, so a
+# custom-app change rebuilds and uploads only a small layer.
+#
 # No secrets needed: GITHUB_TOKEN pushes to ghcr.io/<owner>/erp.
 name: Build
 
@@ -13,16 +18,59 @@ on:
       - images/**
       - apps.json
       - versions.env
+      - .dockerignore
       - deploy/**
       - .github/workflows/build.yml
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: Rebuild the image even if its inputs are unchanged
+        type: boolean
+        default: false
 
 concurrency:
   group: build
   cancel-in-progress: false
 
 jobs:
+  # Hash everything the image is built from; skip the build if that image already exists.
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      inputs_tag: ${{ steps.plan.outputs.inputs_tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image inputs
+        id: plan
+        env:
+          FORCE: ${{ inputs.force_build || false }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/erp"
+          # deploy/frappe_docker is listed as the submodule commit (its entrypoint is copied in).
+          hash="$(git ls-tree -r HEAD -- apps images apps.json versions.env .dockerignore deploy/frappe_docker | sha256sum | cut -c1-16)"
+          tag="inputs-$hash"
+          echo "inputs_tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" != true ] && docker buildx imagetools inspect "$IMAGE:$tag" > /dev/null 2>&1; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Build skipped::image inputs unchanged, reusing $IMAGE:$tag"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -72,9 +120,11 @@ jobs:
             org.opencontainers.image.revision=${{ env.REPO_REV }}
             erp.frappe.ref=${{ env.FRAPPE_REF }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          # Layer cache: a change only under apps/ skips the slow `bench init` layer.
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+          provenance: false
+          # Layer cache in the registry (the GHA cache drops entries unused for 7 days, and
+          # builds here are rare). A change only under apps/ skips the slow `bench init`.
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
 
       - name: Save digest
         run: |
@@ -90,7 +140,9 @@ jobs:
           retention-days: 1
 
   merge:
-    needs: build
+    needs: [plan, build]
+    # Also runs when the build was skipped (plan found the image), not when it failed.
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -99,6 +151,7 @@ jobs:
       image_ref: ${{ steps.ref.outputs.image_ref }}
     steps:
       - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.build == 'true'
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-*
@@ -114,17 +167,25 @@ jobs:
 
       - name: Create multi-arch tag
         id: ref
-        working-directory: ${{ runner.temp }}/digests
+        env:
+          BUILT: ${{ needs.plan.outputs.build }}
+          INPUTS_TAG: ${{ needs.plan.outputs.inputs_tag }}
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/erp"
           TAG="${GITHUB_SHA::7}"
-          docker buildx imagetools create -t "$IMAGE:$TAG" -t "$IMAGE:main" \
-            $(printf "$IMAGE@sha256:%s " *)
+          if [ "$BUILT" = true ]; then
+            cd "$RUNNER_TEMP/digests"
+            docker buildx imagetools create -t "$IMAGE:$TAG" -t "$IMAGE:main" -t "$IMAGE:$INPUTS_TAG" \
+              $(printf "$IMAGE@sha256:%s " *)
+          else
+            docker buildx imagetools create -t "$IMAGE:$TAG" -t "$IMAGE:main" "$IMAGE:$INPUTS_TAG"
+          fi
           digest="$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           echo "image_ref=$IMAGE:$TAG@$digest" >> "$GITHUB_OUTPUT"
 
   verify:
     needs: merge
+    if: ${{ !cancelled() && needs.merge.result == 'success' }}
     # Same arch as the Pi.
     runs-on: ubuntu-24.04-arm
     permissions:

@@ -16,12 +16,13 @@
 ARG BUILD_IMAGE
 ARG BASE_IMAGE
 
-FROM ${BUILD_IMAGE} AS builder
+# Stage 1: Frappe + the apps.json apps. Depends only on versions.env and apps.json, so it is
+# cached across builds and its (big) layer in the final image stays the same: a release that
+# only changes the custom app re-uploads, and the Pi re-downloads, only a few MB.
+FROM ${BUILD_IMAGE} AS bench
 
 ARG FRAPPE_PATH=https://github.com/frappe/frappe
 ARG FRAPPE_REF
-ARG CUSTOM_APP
-ARG REPO_REV=unknown
 
 USER frappe
 
@@ -35,40 +36,62 @@ RUN bench init \
     --no-backups \
     --skip-redis-config-generation \
     --verbose \
-    /home/frappe/frappe-bench
+    /home/frappe/frappe-bench \
+  && cd /home/frappe/frappe-bench \
+  && for app in $(cat sites/apps.txt); do \
+       printf '%s %s %s\n' "$app" "$(git -C apps/$app rev-parse HEAD)" "$(git -C apps/$app describe --tags --always)"; \
+     done > /opt/frappe/app-versions.txt \
+  && find apps -mindepth 1 -path "*/.git" | xargs rm -fr \
+  && chmod -R g=u /home/frappe/frappe-bench
 
 WORKDIR /home/frappe/frappe-bench
+
+# Stage 2: install the custom app on top, then collect every file it added or changed
+# (newer than a marker) into /tmp/delta. Only this stage depends on apps/ and REPO_REV.
+FROM bench AS custom
+
+ARG CUSTOM_APP
+ARG REPO_REV=unknown
 
 COPY --chown=frappe:frappe apps/${CUSTOM_APP} /opt/frappe/${CUSTOM_APP}
 COPY images/check-assets.py /opt/frappe/check-assets.py
 
 # bench get-app only takes git repos, so wrap the copied app in a throwaway one.
-RUN git -C /opt/frappe/${CUSTOM_APP} init -q -b main \
+RUN touch /tmp/before && sleep 1 \
+  && git -C /opt/frappe/${CUSTOM_APP} init -q -b main \
   && git -C /opt/frappe/${CUSTOM_APP} add -A \
   && git -C /opt/frappe/${CUSTOM_APP} -c user.name=build -c user.email=build@localhost commit -q -m "${REPO_REV}" \
   && bench get-app /opt/frappe/${CUSTOM_APP} \
   && echo "{}" > sites/common_site_config.json \
-  && for app in $(cat sites/apps.txt); do \
-       if [ "$app" = "${CUSTOM_APP}" ]; then printf '%s %s %s\n' "$app" "${REPO_REV}" "repo"; \
-       else printf '%s %s %s\n' "$app" "$(git -C apps/$app rev-parse HEAD)" "$(git -C apps/$app describe --tags --always)"; fi; \
-     done | python3 -c 'import json,sys; print(json.dumps({a: {"commit": c, "describe": d} for a, c, d in (l.split() for l in sys.stdin)}, indent=2))' \
+  && { cat /opt/frappe/app-versions.txt; printf '%s %s %s\n' "${CUSTOM_APP}" "${REPO_REV}" "repo"; } \
+     | python3 -c 'import json,sys; print(json.dumps({a: {"commit": c, "describe": d} for a, c, d in (l.split() for l in sys.stdin)}, indent=2))' \
        > versions.json \
   && cat versions.json \
   && python3 /opt/frappe/check-assets.py sites ${CUSTOM_APP} \
-  && find apps -mindepth 1 -path "*/.git" | xargs rm -fr \
-  && chmod -R g=u /home/frappe/frappe-bench
+  && rm -rf apps/${CUSTOM_APP}/.git \
+  && mkdir /tmp/delta \
+  && find . \( -type f -o -type l \) -newer /tmp/before -print0 | xargs -0 cp -P --parents -t /tmp/delta \
+  && chmod -R g=u /tmp/delta \
+  && echo "custom app layer: $(du -sh /tmp/delta | cut -f1), $(find /tmp/delta -type f | wc -l) files"
 
 FROM ${BASE_IMAGE} AS backend
 
 USER frappe
 
-# g=u is applied in the builder: a chmod here would duplicate the whole bench in a new layer.
-COPY --from=builder --chown=frappe:0 /home/frappe/frappe-bench /home/frappe/frappe-bench
+# Two layers: the stable bench, then the custom app's files. g=u is applied in the earlier
+# stages: a chmod here would duplicate the whole bench in a new layer.
+COPY --from=bench --chown=frappe:0 /home/frappe/frappe-bench /home/frappe/frappe-bench
+COPY --from=custom --chown=frappe:0 /tmp/delta/ /home/frappe/frappe-bench/
 
 WORKDIR /home/frappe/frappe-bench
 
-# Move assets to image-layer storage; the entrypoint links them into the sites volume.
-RUN cp -r /home/frappe/frappe-bench/sites/assets /home/frappe/frappe-bench/assets && \
+# Check the merged layers (assets, and that the custom app imports), then move assets to
+# image-layer storage; the entrypoint links them into the sites volume.
+ARG CUSTOM_APP
+RUN --mount=type=bind,from=custom,source=/opt/frappe/check-assets.py,target=/tmp/check-assets.py \
+  env/bin/python /tmp/check-assets.py sites ${CUSTOM_APP} && \
+  env/bin/python -c "import ${CUSTOM_APP}.hooks" && \
+  cp -r /home/frappe/frappe-bench/sites/assets /home/frappe/frappe-bench/assets && \
   rm -rf /home/frappe/frappe-bench/sites/assets
 
 VOLUME [ \
